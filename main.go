@@ -45,8 +45,10 @@ func main() {
 		mux.Handle("/", router)
 	}
 
+	handler := withCORS(mux, loadAllowedOrigins())
+
 	log.Printf("gateway-core listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatal(err)
 	}
 }
