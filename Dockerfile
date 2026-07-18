@@ -1,7 +1,7 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /app
 COPY go.mod ./
-COPY main.go ./
+COPY *.go ./
 RUN go build -o gateway-core .
 
 FROM alpine:3.20
