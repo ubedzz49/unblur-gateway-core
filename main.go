@@ -3,13 +3,29 @@ package main
 import (
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 )
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func loadRouteConfigs() []RouteConfig {
+	if raw := os.Getenv("ROUTES"); raw != "" {
+		configs, err := ParseRouteConfigs(raw)
+		if err != nil {
+			log.Fatalf("invalid ROUTES: %v", err)
+		}
+		return configs
+	}
+
+	// backward-compatible fallback: a single catch-all upstream
+	if upstream := os.Getenv("UPSTREAM_URL"); upstream != "" {
+		return []RouteConfig{{Prefix: "/", Upstream: upstream}}
+	}
+
+	return nil
 }
 
 func main() {
@@ -21,13 +37,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
 
-	// K3 replaces this with a dynamic route table -- one hardcoded upstream for now
-	if upstreamRaw := os.Getenv("UPSTREAM_URL"); upstreamRaw != "" {
-		upstream, err := url.Parse(upstreamRaw)
+	if configs := loadRouteConfigs(); len(configs) > 0 {
+		router, err := NewRouter(configs)
 		if err != nil {
-			log.Fatalf("invalid UPSTREAM_URL: %v", err)
+			log.Fatalf("failed to build router: %v", err)
 		}
-		mux.Handle("/", newReverseProxy(upstream))
+		mux.Handle("/", router)
 	}
 
 	log.Printf("gateway-core listening on :%s", port)
