@@ -31,6 +31,7 @@ func withRequestLogging(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", captured.status,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"request_id", requestIDFromContext(r.Context()),
 		}
 
 		switch {

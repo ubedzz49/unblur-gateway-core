@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 )
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -32,12 +33,38 @@ func loadRouteConfigs() []RouteConfig {
 	return nil
 }
 
+// loadPublicRoutePrefixes reads PUBLIC_ROUTES as a comma-separated list of
+// path prefixes that skip JWT verification, defaulting to /auth only.
+// /expertise-options is also treated as public below: the user-service
+// endpoint it proxies to has no auth check of its own (it backs the
+// expertise picker shown during pre-login onboarding), so gating it here
+// would just break that flow without adding real protection.
+func loadPublicRoutePrefixes() []string {
+	prefixes := []string{"/auth", "/expertise-options"}
+	if raw := os.Getenv("PUBLIC_ROUTES"); raw != "" {
+		prefixes = nil
+		for _, p := range strings.Split(raw, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				prefixes = append(prefixes, p)
+			}
+		}
+	}
+	return prefixes
+}
+
 func main() {
 	initLogger()
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET is not set; refusing to start unauthenticated")
+		os.Exit(1)
 	}
 
 	mux := http.NewServeMux()
@@ -52,7 +79,8 @@ func main() {
 		mux.Handle("/", router)
 	}
 
-	handler := withRequestLogging(withCORS(mux, loadAllowedOrigins()))
+	authenticated := withJWTAuth(mux, jwtSecret, loadPublicRoutePrefixes())
+	handler := withCorrelationID(withRequestLogging(withCORS(authenticated, loadAllowedOrigins())))
 
 	slog.Info("gateway-core starting", "port", port)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
