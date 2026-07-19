@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 )
@@ -15,20 +15,26 @@ func loadRouteConfigs() []RouteConfig {
 	if raw := os.Getenv("ROUTES"); raw != "" {
 		configs, err := ParseRouteConfigs(raw)
 		if err != nil {
-			log.Fatalf("invalid ROUTES: %v", err)
+			slog.Error("invalid ROUTES config", "error", err)
+			os.Exit(1)
 		}
+		slog.Info("loaded route config", "route_count", len(configs))
 		return configs
 	}
 
 	// backward-compatible fallback: a single catch-all upstream
 	if upstream := os.Getenv("UPSTREAM_URL"); upstream != "" {
+		slog.Info("using single fallback upstream", "upstream", upstream)
 		return []RouteConfig{{Prefix: "/", Upstream: upstream}}
 	}
 
+	slog.Warn("no ROUTES or UPSTREAM_URL configured, only /healthz will respond")
 	return nil
 }
 
 func main() {
+	initLogger()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -40,15 +46,17 @@ func main() {
 	if configs := loadRouteConfigs(); len(configs) > 0 {
 		router, err := NewRouter(configs)
 		if err != nil {
-			log.Fatalf("failed to build router: %v", err)
+			slog.Error("failed to build router", "error", err)
+			os.Exit(1)
 		}
 		mux.Handle("/", router)
 	}
 
-	handler := withCORS(mux, loadAllowedOrigins())
+	handler := withRequestLogging(withCORS(mux, loadAllowedOrigins()))
 
-	log.Printf("gateway-core listening on :%s", port)
+	slog.Info("gateway-core starting", "port", port)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
-		log.Fatal(err)
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
 	}
 }
