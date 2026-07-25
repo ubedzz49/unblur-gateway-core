@@ -13,9 +13,17 @@ const testSecret = "test-secret-value"
 
 func signTestToken(t *testing.T, secret string, sub string, expiry time.Time) string {
 	t.Helper()
+	return signTestTokenWithRole(t, secret, sub, "", expiry)
+}
+
+func signTestTokenWithRole(t *testing.T, secret string, sub string, role string, expiry time.Time) string {
+	t.Helper()
 	claims := jwt.MapClaims{
 		"sub": sub,
 		"exp": expiry.Unix(),
+	}
+	if role != "" {
+		claims["role"] = role
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(secret))
@@ -166,5 +174,101 @@ func TestWithJWTAuthAcceptsValidTokenAndInjectsUserID(t *testing.T) {
 	}
 	if seenUserID != "user-42" {
 		t.Fatalf("expected X-User-Id header to be %q, got %q", "user-42", seenUserID)
+	}
+}
+
+func TestWithJWTAuthForwardsRoleHeaderWhenPresent(t *testing.T) {
+	var seenRole string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRole = r.Header.Get("X-User-Role")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestTokenWithRole(t, testSecret, "admin", "admin", time.Now().Add(30*24*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if seenRole != "admin" {
+		t.Fatalf("expected X-User-Role header to be %q, got %q", "admin", seenRole)
+	}
+}
+
+func TestWithJWTAuthDoesNotSetRoleHeaderForOrdinaryUsers(t *testing.T) {
+	var sawHeader bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["X-User-Role"]
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestToken(t, testSecret, "user-42", time.Now().Add(30*24*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if sawHeader {
+		t.Fatal("expected no X-User-Role header for a token with no role claim")
+	}
+}
+
+func TestWithJWTAuthAllowsAdminRoleOnAdminPath(t *testing.T) {
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestTokenWithRole(t, testSecret, "admin", "admin", time.Now().Add(30*24*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("expected an admin-role token to reach the wrapped handler on an /admin/ path")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestWithJWTAuthRejectsNonAdminOnAdminPath(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called for a non-admin token on an /admin/ path")
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestToken(t, testSecret, "user-42", time.Now().Add(30*24*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestWithJWTAuthRejectsMissingTokenOnAdminPath(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called without a token on an /admin/ path")
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 (missing token checked before the admin-role check), got %d", rec.Code)
 	}
 }
