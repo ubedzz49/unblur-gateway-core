@@ -1,3 +1,4 @@
 gateway-core
 *.log
 .env
+unblur-gateway-core
