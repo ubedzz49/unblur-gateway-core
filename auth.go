@@ -73,6 +73,11 @@ func withJWTAuth(next http.Handler, secret string, publicPrefixes []string) http
 		if role != "" {
 			r.Header.Set("X-User-Role", role)
 		}
+		// only present on admin/superadmin tokens (user-service embeds it so audit-log entries
+		// don't need a DB round trip to resolve "which admin did this" to a human-readable name)
+		if username, ok := claims["username"].(string); ok && username != "" {
+			r.Header.Set("X-User-Username", username)
+		}
 		ctx := context.WithValue(r.Context(), userIDContextKey, sub)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
