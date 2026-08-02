@@ -39,8 +39,11 @@ func loadRouteConfigs() []RouteConfig {
 // endpoint it proxies to has no auth check of its own (it backs the
 // expertise picker shown during pre-login onboarding), so gating it here
 // would just break that flow without adding real protection.
+// /internal is public from the JWT layer's perspective too -- it has its own, separate gate
+// (withInternalToken, the shared service-to-service secret), not a user JWT. Skipping JWT
+// verification here isn't a hole: no user-facing route lives under /internal.
 func loadPublicRoutePrefixes() []string {
-	prefixes := []string{"/auth", "/expertise-options"}
+	prefixes := []string{"/auth", "/expertise-options", "/internal"}
 	if raw := os.Getenv("PUBLIC_ROUTES"); raw != "" {
 		prefixes = nil
 		for _, p := range strings.Split(raw, ",") {
@@ -67,8 +70,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// fail closed, same philosophy as every backend service's INTERNAL_SERVICE_TOKEN check -- an
+	// unset token would otherwise mean /internal/log-level silently accepts anything
+	internalServiceToken := os.Getenv("INTERNAL_SERVICE_TOKEN")
+	if internalServiceToken == "" {
+		slog.Error("INTERNAL_SERVICE_TOKEN is not set; refusing to start")
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
+	mux.HandleFunc("/internal/log-level", withInternalToken(logLevelHandler, internalServiceToken))
 
 	if configs := loadRouteConfigs(); len(configs) > 0 {
 		router, err := NewRouter(configs)
