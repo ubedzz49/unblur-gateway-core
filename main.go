@@ -82,17 +82,26 @@ func main() {
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/internal/log-level", withInternalToken(logLevelHandler, internalServiceToken))
 
+	breakers := NewCircuitBreakerRegistry()
+	mux.HandleFunc("/internal/metrics", withInternalToken(metricsHandler(breakers), internalServiceToken))
+
 	if configs := loadRouteConfigs(); len(configs) > 0 {
-		router, err := NewRouter(configs)
+		router, err := NewRouterWithBreakers(configs, breakers)
 		if err != nil {
 			slog.Error("failed to build router", "error", err)
 			os.Exit(1)
 		}
+		mux.HandleFunc("/internal/routes", withInternalToken(routesHandler(router), internalServiceToken))
 		mux.Handle("/", router)
 	}
 
+	// 120 requests/minute per client (user id once authenticated, else remote IP), refilled
+	// continuously rather than in a fixed window -- generous enough for normal app usage, tight
+	// enough to blunt a runaway retry loop or scripted abuse
+	limiter := NewRateLimiter(120, 2)
+
 	authenticated := withJWTAuth(mux, jwtSecret, loadPublicRoutePrefixes())
-	handler := withCorrelationID(withRequestLogging(withCORS(authenticated, loadAllowedOrigins())))
+	handler := withCorrelationID(withRequestLogging(withCORS(withRateLimit(authenticated, limiter), loadAllowedOrigins())))
 
 	slog.Info("gateway-core starting", "port", port)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
