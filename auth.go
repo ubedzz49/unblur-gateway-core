@@ -52,15 +52,19 @@ func withJWTAuth(next http.Handler, secret string, publicPrefixes []string) http
 			return
 		}
 
-		// optional -- absent for every ordinary user token, only ever "admin" for the fixed
-		// admin login. Forwarded so backend services can trust it the same way they trust
-		// X-User-Id, without re-verifying the JWT themselves.
+		// optional -- absent for every ordinary user token, "admin" or "superadmin" for a real
+		// admin account (Version 9 RBAC, user-service's admin_users table). Forwarded verbatim
+		// so backend services can trust it the same way they trust X-User-Id, without
+		// re-verifying the JWT themselves.
 		role, _ := claims["role"].(string)
+		isAdminTier := role == "admin" || role == "superadmin"
 
 		// admin routes are a distinct trust tier from "any logged-in user" -- enforced here,
 		// at the one place that actually verifies the JWT, rather than trusting every backend
-		// service to remember to check this on every admin-gated route it adds
-		if strings.HasPrefix(r.URL.Path, "/admin/") && role != "admin" {
+		// service to remember to check this on every admin-gated route it adds. superadmin is a
+		// strictly higher tier than admin (can manage other admin accounts, see the audit log),
+		// not a separate one -- anywhere "admin" is allowed, "superadmin" is too.
+		if strings.HasPrefix(r.URL.Path, "/admin/") && !isAdminTier {
 			writeAuthError(w, http.StatusForbidden, "admin access required")
 			return
 		}
