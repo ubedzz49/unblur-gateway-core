@@ -240,6 +240,32 @@ func TestWithJWTAuthAllowsAdminRoleOnAdminPath(t *testing.T) {
 	}
 }
 
+func TestWithJWTAuthAllowsSuperadminRoleOnAdminPath(t *testing.T) {
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := r.Header.Get("X-User-Role"); got != "superadmin" {
+			t.Errorf("expected X-User-Role to be forwarded as superadmin, got %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestTokenWithRole(t, testSecret, "super-1", "superadmin", time.Now().Add(30*24*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit-log", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("expected a superadmin-role token to reach the wrapped handler on an /admin/ path")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
 func TestWithJWTAuthRejectsNonAdminOnAdminPath(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called for a non-admin token on an /admin/ path")
