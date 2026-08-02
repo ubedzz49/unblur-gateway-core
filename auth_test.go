@@ -18,12 +18,20 @@ func signTestToken(t *testing.T, secret string, sub string, expiry time.Time) st
 
 func signTestTokenWithRole(t *testing.T, secret string, sub string, role string, expiry time.Time) string {
 	t.Helper()
+	return signTestTokenWithRoleAndUsername(t, secret, sub, role, "", expiry)
+}
+
+func signTestTokenWithRoleAndUsername(t *testing.T, secret string, sub string, role string, username string, expiry time.Time) string {
+	t.Helper()
 	claims := jwt.MapClaims{
 		"sub": sub,
 		"exp": expiry.Unix(),
 	}
 	if role != "" {
 		claims["role"] = role
+	}
+	if username != "" {
+		claims["username"] = username
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(secret))
@@ -194,6 +202,44 @@ func TestWithJWTAuthForwardsRoleHeaderWhenPresent(t *testing.T) {
 
 	if seenRole != "admin" {
 		t.Fatalf("expected X-User-Role header to be %q, got %q", "admin", seenRole)
+	}
+}
+
+func TestWithJWTAuthForwardsUsernameForAdminTokens(t *testing.T) {
+	var seenUsername string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUsername = r.Header.Get("X-User-Username")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestTokenWithRoleAndUsername(t, testSecret, "admin-id-1", "admin", "boss", time.Now().Add(30*24*time.Hour))
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if seenUsername != "boss" {
+		t.Errorf("expected X-User-Username to be forwarded as boss, got %q", seenUsername)
+	}
+}
+
+func TestWithJWTAuthDoesNotForwardUsernameWhenAbsent(t *testing.T) {
+	var sawHeader bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["X-User-Username"]
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withJWTAuth(inner, testSecret, nil)
+
+	token := signTestToken(t, testSecret, "user-42", time.Now().Add(30*24*time.Hour))
+	req := httptest.NewRequest(http.MethodGet, "/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if sawHeader {
+		t.Error("expected no X-User-Username header for a token with no username claim")
 	}
 }
 
